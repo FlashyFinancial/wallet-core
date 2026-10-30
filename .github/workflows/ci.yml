@@ -1,0 +1,41 @@
+name: CI
+
+# Modeled on flashyos's own ci.yml: typecheck + test on every push and pull
+# request, so a red test is caught before merge rather than discovered at
+# publish time.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck + test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22, same as flashyos's own CI: @flashyfinancial/signer
+          # declares @tetherto/wdk* as optional dependencies, and npm drops
+          # an optional subtree whose `engines` it cannot satisfy — silently,
+          # with the tests that exercise it then skipping rather than
+          # failing. Node 22 is what satisfies that engines field.
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (all workspaces)
+        run: npm run typecheck
+
+      - name: Test (all workspaces)
+        run: npm run test

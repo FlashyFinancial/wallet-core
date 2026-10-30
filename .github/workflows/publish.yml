@@ -1,0 +1,137 @@
+name: Publish
+
+# Tag-triggered, not push-to-main-triggered — a merge to main should not be
+# indistinguishable from a release. Push a release tag
+# (git tag wallet-wdk-v0.1.0 && git push --tags, or signer-v0.1.0 / wdk-v0.1.0)
+# when a release is actually intended. workflow_dispatch does the same
+# deliberate act by hand, for whichever one of the three packages you name:
+# it releases whatever version that package's package.json declares and
+# creates the matching tag as part of the run, and refuses if the tag
+# already exists — so "every release has its tag" holds either way.
+#
+# This follows the same refuse-before-install pattern flashy-ledger's
+# publish.yml uses (see that repository's .github/workflows/publish.yml):
+# one secret, NPM_TOKEN, an npm access token with publish rights on the
+# @flashyfinancial scope. Without it the job REFUSES, before installing
+# anything — there is no fallback registry to land on by accident.
+on:
+  push:
+    tags:
+      - "wallet-wdk-v*"
+      - "signer-v*"
+      - "wdk-v*"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Which package to publish"
+        required: true
+        type: choice
+        options:
+          - wallet-wdk
+          - signer
+          - wdk
+
+permissions:
+  # write, not read, for exactly one path: the dispatch flow pushes the
+  # release tag it mints. The tag-push flow never writes contents.
+  contents: write
+
+jobs:
+  publish:
+    name: Build and publish to registry.npmjs.org
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the package directory and name from the trigger
+        id: pkg
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DIR="${{ inputs.package }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            case "$TAG" in
+              wallet-wdk-v*) DIR="wallet-wdk" ;;
+              signer-v*) DIR="signer" ;;
+              wdk-v*) DIR="wdk" ;;
+              *) echo "::error::Tag $TAG does not match a known package prefix" >&2; exit 1 ;;
+            esac
+          fi
+          NAME="$(node -p "require('./packages/${DIR}/package.json').name")"
+          echo "dir=packages/${DIR}" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          # setup-node writes a SCOPED registry entry, which beats both
+          # publishConfig.registry and --registry — stated here so the scope
+          # and the registry agree with each package.json's own
+          # publishConfig and cannot be overridden by a stray .npmrc.
+          registry-url: https://registry.npmjs.org
+          scope: "@flashyfinancial"
+
+      # Fail closed, first. A publish that "succeeds" by falling back to a
+      # token-less registry, or that gets as far as the PUT before finding
+      # out there is no credential, is the failure this step exists to
+      # prevent.
+      - name: Refuse to run without NPM_TOKEN
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN is not set. Add an npm access token with publish rights on @flashyfinancial as a repository secret named NPM_TOKEN. Nothing was published." >&2
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run typecheck --workspace="${{ steps.pkg.outputs.name }}"
+      - run: npm run test --workspace="${{ steps.pkg.outputs.name }}"
+      - run: npm run build --workspace="${{ steps.pkg.outputs.name }}"
+
+      # Tag flow: the tag is the source of truth for "what version am I
+      # publishing," not a value someone could forget to bump in
+      # package.json before tagging.
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME##*-v}"
+          PKG_VERSION="$(node -p "require('./${{ steps.pkg.outputs.dir }}/package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match ${{ steps.pkg.outputs.name }}'s package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+      # Dispatch flow: package.json is the source of truth instead, and the
+      # not-yet-tagged check is what makes dispatch idempotent.
+      - name: Refuse to dispatch-release an already-tagged version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          PKG_VERSION="$(node -p "require('./${{ steps.pkg.outputs.dir }}/package.json').version")"
+          TAG="${{ inputs.package }}-v${PKG_VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::${TAG} is already tagged — bump ${{ steps.pkg.outputs.dir }}/package.json before dispatching a release." >&2
+            exit 1
+          fi
+
+      # The registry checks version-existence before it verifies the token,
+      # so an E409 here means "already published", not "authenticated" —
+      # read the error, not the step colour.
+      - name: Publish to registry.npmjs.org
+        id: publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --workspace="${{ steps.pkg.outputs.name }}"
+
+      # Only after the PUBLISH succeeded — checked explicitly, never the
+      # implicit success(), which treats any earlier failure as reason to
+      # skip tagging a release that actually landed.
+      - name: Tag the released version (dispatch flow only)
+        if: github.event_name == 'workflow_dispatch' && steps.publish.conclusion == 'success'
+        run: |
+          PKG_VERSION="$(node -p "require('./${{ steps.pkg.outputs.dir }}/package.json').version")"
+          TAG="${{ inputs.package }}-v${PKG_VERSION}"
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/${TAG}"

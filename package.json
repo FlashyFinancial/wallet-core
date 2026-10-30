@@ -1,0 +1,16 @@
+{
+  "name": "wallet-core",
+  "private": true,
+  "description": "FlashyFinancial wallet plane — the governed economic-agency stack for FlashyOS agents, extracted from flashyos/packages/{wallet-wdk,signer,wdk}.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
