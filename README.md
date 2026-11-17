@@ -71,6 +71,10 @@ is a secret — `test-signing-key.pub.pem` is a public key, and
 `.github/workflows/ci.yml` runs `npm ci`, `npm run typecheck` and
 `npm run test` across all three workspaces on every push and pull request.
 
+`.github/workflows/secret-scan.yml` runs the estate's shared secret scan
+(`FlashyLabs/flashy-infra`'s reusable workflow) on every push, pull request
+and weekly on a schedule.
+
 `.github/workflows/publish.yml` publishes a package to the public npm
 registry on a `<package>-vX.Y.Z` tag, following the same refuse-before-install
 pattern `flashy-ledger`'s `publish.yml` uses: the job checks for the
