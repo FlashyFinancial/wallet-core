@@ -176,6 +176,16 @@ export function verifyReceipt(
   options: { expectedPayerKey?: string; trustedKeys?: string[]; invoice?: SignedInvoice | SignedInvoicePayload } = {},
 ): InteropCheck {
   if (!shapeOfReceipt(receipt)) return { ok: false, code: 'MALFORMED' };
+  // Called with neither option, this used to fall straight through to the
+  // signature check below, which verifies against receipt.payer.publicKey —
+  // the key EMBEDDED IN THE RECEIPT ITSELF. A forger who controls the whole
+  // document controls that field too, so a forged receipt signed with a
+  // throwaway key verified as {ok: true}. A trust anchor is not optional: a
+  // document cannot vouch for itself, and that is true before it is also
+  // self-consistent. (Ported from flashyos/packages/wallet-wdk — A22.)
+  if (options.expectedPayerKey === undefined && options.trustedKeys === undefined) {
+    return { ok: false, code: 'WRONG_KEY' };
+  }
   if (options.expectedPayerKey !== undefined && normalizePem(options.expectedPayerKey) !== normalizePem(receipt.payer.publicKey)) return { ok: false, code: 'WRONG_KEY' };
   // A set of keys the verifier trusts — a registry of planes, a plane
   // document's keys. The embedded key must be one of them; retired keys
