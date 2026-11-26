@@ -72,21 +72,39 @@ describe('SignedReceipt', () => {
   it('verifies under the plane key the verifier already trusts', () => {
     const receipt = signReceipt(receiptPayload, plane.priv);
     expect(verifyReceipt(receipt, { expectedPayerKey: plane.pub, invoice })).toEqual({ ok: true });
-    expect(verifyReceipt(receipt)).toEqual({ ok: true });
+    expect(verifyReceipt(receipt, { trustedKeys: [plane.pub] })).toEqual({ ok: true });
   });
 
   it('is WRONG_KEY when the embedded key is not the expected one, even if self-consistent', () => {
     const impostor = pair();
     const forged = signReceipt({ ...receiptPayload, payer: { ...receiptPayload.payer, publicKey: impostor.pub } }, impostor.priv);
-    expect(verifyReceipt(forged)).toEqual({ ok: true });
     expect(verifyReceipt(forged, { expectedPayerKey: plane.pub })).toEqual({ ok: false, code: 'WRONG_KEY' });
+  });
+
+  it('refuses a forged receipt when the caller names no trusted key, instead of verifying it against its own embedded key', () => {
+    // A document cannot vouch for itself. Before this fix, calling with no
+    // options at all fell straight through to checking the signature against
+    // receipt.payer.publicKey - the field a forger who built the whole
+    // document also controls - so a forged receipt signed with a throwaway
+    // key came back {ok: true}. (Ported from flashyos/packages/wallet-wdk — A22.)
+    const impostor = pair();
+    const forged = signReceipt({ ...receiptPayload, payer: { ...receiptPayload.payer, publicKey: impostor.pub } }, impostor.priv);
+    expect(verifyReceipt(forged)).toEqual({ ok: false, code: 'WRONG_KEY' });
+    expect(verifyReceipt(forged, {})).toEqual({ ok: false, code: 'WRONG_KEY' });
+  });
+
+  it('still refuses with no trust anchor even when the receipt is genuinely self-consistent', () => {
+    // Not just the forged case: a caller who forgets to pass a key gets a
+    // refusal rather than a silent self-check, whatever the receipt says.
+    const receipt = signReceipt(receiptPayload, plane.priv);
+    expect(verifyReceipt(receipt)).toEqual({ ok: false, code: 'WRONG_KEY' });
   });
 
   it('fails when the receipt names a different invoice or a field is altered', () => {
     const receipt = signReceipt(receiptPayload, plane.priv);
-    expect(verifyReceipt(receipt, { invoice: { ...invoicePayload, amount: '9' } })).toEqual({ ok: false, code: 'BAD_SIGNATURE' });
-    expect(verifyReceipt({ ...receipt, txHash: '0xdef' })).toEqual({ ok: false, code: 'BAD_SIGNATURE' });
-    expect(verifyReceipt({ ...receipt, outcome: 'MAYBE' })).toEqual({ ok: false, code: 'MALFORMED' });
+    expect(verifyReceipt(receipt, { expectedPayerKey: plane.pub, invoice: { ...invoicePayload, amount: '9' } })).toEqual({ ok: false, code: 'BAD_SIGNATURE' });
+    expect(verifyReceipt({ ...receipt, txHash: '0xdef' }, { expectedPayerKey: plane.pub })).toEqual({ ok: false, code: 'BAD_SIGNATURE' });
+    expect(verifyReceipt({ ...receipt, outcome: 'MAYBE' }, { expectedPayerKey: plane.pub })).toEqual({ ok: false, code: 'MALFORMED' });
   });
 });
 
